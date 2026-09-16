@@ -37,6 +37,7 @@ export function getDefaultSlabConfig(serial: string): SlabConfig {
     labelColor: 'cyber_cyan',
     grade: '#10 GRADE',
     subGrade: 'GEM MINT',
+    condition: 'Gem Mint',
     serialNumber: serial,
     qrEnabled: true,
     nfcEnabled: true,
@@ -50,6 +51,7 @@ interface VaultContextType {
   loading: boolean;
   portfolioSnapshots: PortfolioSnapshot[];
   addBatchToVault: (items: ScanTrayItem[]) => Promise<void>;
+  addSingleCardToVault: (cardData: Partial<CardItem>) => Promise<CardItem>;
   toggleFavorite: (cardId: string) => Promise<void>;
   updateCard: (cardId: string, updates: Partial<CardItem>) => Promise<void>;
   updateSlabConfig: (cardId: string, updates: Partial<SlabConfig>) => Promise<void>;
@@ -232,6 +234,51 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const addSingleCardToVault = async (cardData: Partial<CardItem>): Promise<CardItem> => {
+    if (!user) throw new Error('Must be signed in to save cards to Vault');
+
+    const docId = `card_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const cardPath = `users/${user.uid}/vault/${docId}`;
+    const nextSerial = cardData.certNumber || cardData.slabConfig?.serialNumber || generateNextVcaSerial(cards);
+    const slabConfig = cardData.slabConfig || getDefaultSlabConfig(nextSerial);
+
+    const newCard: CardItem = {
+      id: docId,
+      userId: user.uid,
+      cardId: cardData.cardId || `custom_${Date.now()}`,
+      name: cardData.name || 'Unknown Card',
+      setName: cardData.setName || 'Custom Set',
+      number: cardData.number || '001',
+      rarity: cardData.rarity || 'Rare',
+      imageUrl: cardData.imageUrl || '',
+      imageUrlHiRes: cardData.imageUrlHiRes || cardData.imageUrl || '',
+      language: cardData.language || 'EN',
+      variant: cardData.variant || 'Normal',
+      rawPrice: cardData.rawPrice || 0,
+      psa10Price: cardData.psa10Price || 0,
+      psa9Price: cardData.psa9Price || 0,
+      psa8Price: cardData.psa8Price || 0,
+      isFavorite: false,
+      customGrade: cardData.customGrade || slabConfig.grade || '#10 GRADE',
+      certNumber: nextSerial,
+      slabConfig: {
+        ...slabConfig,
+        serialNumber: nextSerial,
+      },
+      notes: cardData.notes || '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      await setDoc(doc(db, 'users', user.uid, 'vault', docId), newCard);
+      return newCard;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, cardPath);
+      throw err;
+    }
+  };
+
   const updateSlabConfig = async (cardId: string, updates: Partial<SlabConfig>) => {
     if (!user) return;
     const target = cards.find((c) => c.id === cardId);
@@ -344,6 +391,7 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         loading,
         portfolioSnapshots,
         addBatchToVault,
+        addSingleCardToVault,
         toggleFavorite,
         updateCard,
         updateSlabConfig,

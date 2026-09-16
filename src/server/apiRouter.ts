@@ -49,6 +49,25 @@ apiRouter.get('/cards/search', async (req: Request, res: Response) => {
   }
 });
 
+// Compute live pricing for custom variant (must precede /cards/:id)
+apiRouter.get('/cards/pricing', async (req: Request, res: Response) => {
+  try {
+    const cardId = req.query.cardId as string;
+    const variant = (req.query.variant as string) || 'Normal';
+
+    let card = null;
+    if (cardId) {
+      card = await getCardById(cardId);
+    }
+
+    const pricing = computeCardPricing(card, variant);
+    res.json({ pricing });
+  } catch (error: any) {
+    console.error('API /cards/pricing error:', error);
+    res.status(500).json({ error: error?.message || 'Failed to compute pricing' });
+  }
+});
+
 // Get card details and live pricing
 apiRouter.get('/cards/:id', async (req: Request, res: Response) => {
   try {
@@ -66,24 +85,5 @@ apiRouter.get('/cards/:id', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('API /cards/:id error:', error);
     res.status(500).json({ error: error?.message || 'Failed to fetch card' });
-  }
-});
-
-// Compute live pricing for custom variant
-apiRouter.get('/cards/pricing', async (req: Request, res: Response) => {
-  try {
-    const cardId = req.query.cardId as string;
-    const variant = (req.query.variant as string) || 'Normal';
-
-    let card = null;
-    if (cardId) {
-      card = await getCardById(cardId);
-    }
-
-    const pricing = computeCardPricing(card, variant);
-    res.json({ pricing });
-  } catch (error: any) {
-    console.error('API /cards/pricing error:', error);
-    res.status(500).json({ error: error?.message || 'Failed to compute pricing' });
   }
 });

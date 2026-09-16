@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
@@ -23,11 +23,37 @@ import {
   RefreshCw,
   Eye,
   Crown,
+  Film,
+  Compass,
+  ChevronDown,
+  FlaskConical,
+  Trees,
+  Flame,
 } from 'lucide-react';
 import { CardItem, SlabConfig, SlabType, LabelColor } from '../types/pokemon.ts';
 import { useVault, generateNextVcaSerial, getDefaultSlabConfig } from '../firebase/VaultContext.tsx';
 import { renderVcaFrontLabel, renderVcaBackLabel, LABEL_THEMES } from '../utils/vcaLabelGenerator.ts';
 import { NfcAuthModal } from './NfcAuthModal.tsx';
+import { SlabGifExportModal } from './SlabGifExportModal.tsx';
+import {
+  BackgroundEnvironment,
+  EnvironmentOption,
+  ENVIRONMENTS,
+  buildStarlightEnvironment,
+  buildLaboratoryEnvironment,
+  buildForestEnvironment,
+  buildVolcanicEnvironment,
+  StarlightObjects,
+  LaboratoryObjects,
+  ForestObjects,
+  VolcanicObjects,
+} from './slabEnvironments.ts';
+import {
+  SlabGradeBadge,
+  CONDITION_TIERS,
+  ConditionTier,
+  resolveConditionTier,
+} from './SlabGradeBadge.tsx';
 
 export interface SlabColorOption {
   id: SlabType;
@@ -259,11 +285,20 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
   const [showCustomizer, setShowCustomizer] = useState(true);
   const [activeTab, setActiveTab] = useState<'colors' | 'label' | 'serial' | 'fx'>('colors');
   const [showNfcModal, setShowNfcModal] = useState(false);
+  const [showGifModal, setShowGifModal] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [serialError, setSerialError] = useState<string | null>(null);
 
+  // 3D Background Environment State ('starlight', 'laboratory', 'forest', 'volcanic')
+  const [environment, setEnvironment] = useState<BackgroundEnvironment>('starlight');
+  const [isEnvDropdownOpen, setIsEnvDropdownOpen] = useState(false);
+  const currentEnvOption = ENVIRONMENTS.find((e) => e.id === environment) || ENVIRONMENTS[0];
+
   // Three.js refs for live updating without tearing down the entire scene
   const controlsRef = useRef<OrbitControls | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const slabGroupRef = useRef<THREE.Group | null>(null);
   const frontLabelMatRef = useRef<THREE.MeshBasicMaterial | null>(null);
   const backLabelMatRef = useRef<THREE.MeshBasicMaterial | null>(null);
@@ -279,6 +314,81 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
     uHasTexture: { value: number };
     uPattern: { value: number };
   } | null>(null);
+
+  // Environment objects reference for dynamic real-time swapping
+  const envObjectsRef = useRef<{
+    currentEnv: BackgroundEnvironment;
+    ambientLight: THREE.AmbientLight | null;
+    keyLight: THREE.DirectionalLight | null;
+    fillLight: THREE.DirectionalLight | null;
+    rimLight: THREE.PointLight | null;
+    starlightGroup: THREE.Group | null;
+    laboratoryGroup: THREE.Group | null;
+    forestGroup: THREE.Group | null;
+    volcanicGroup: THREE.Group | null;
+    starlightObjects: StarlightObjects | null;
+    laboratoryObjects: LaboratoryObjects | null;
+    forestObjects: ForestObjects | null;
+    volcanicObjects: VolcanicObjects | null;
+  }>({
+    currentEnv: 'starlight',
+    ambientLight: null,
+    keyLight: null,
+    fillLight: null,
+    rimLight: null,
+    starlightGroup: null,
+    laboratoryGroup: null,
+    forestGroup: null,
+    volcanicGroup: null,
+    starlightObjects: null,
+    laboratoryObjects: null,
+    forestObjects: null,
+    volcanicObjects: null,
+  });
+
+  // Apply environment changes dynamically to the active Three.js scene
+  const applyEnvironment = useCallback((envId: BackgroundEnvironment) => {
+    const envOpt = ENVIRONMENTS.find((e) => e.id === envId) || ENVIRONMENTS[0];
+    const scene = sceneRef.current;
+    const env = envObjectsRef.current;
+
+    if (scene) {
+      scene.background = new THREE.Color(envOpt.bgColor);
+      if (scene.fog) {
+        scene.fog.color.setHex(envOpt.fogColor);
+        (scene.fog as THREE.FogExp2).density = envOpt.fogDensity;
+      }
+    }
+
+    if (env.ambientLight) {
+      env.ambientLight.color.setHex(envOpt.ambientColor);
+      env.ambientLight.intensity = envOpt.ambientIntensity;
+    }
+    if (env.keyLight) {
+      env.keyLight.color.setHex(envOpt.keyColor);
+      env.keyLight.intensity = envOpt.keyIntensity;
+    }
+    if (env.fillLight) {
+      env.fillLight.color.setHex(envOpt.fillColor);
+      env.fillLight.intensity = envOpt.fillIntensity;
+    }
+    if (env.rimLight) {
+      env.rimLight.color.setHex(envOpt.rimColor);
+      env.rimLight.intensity = envOpt.rimIntensity;
+    }
+
+    if (env.starlightGroup) env.starlightGroup.visible = envId === 'starlight';
+    if (env.laboratoryGroup) env.laboratoryGroup.visible = envId === 'laboratory';
+    if (env.forestGroup) env.forestGroup.visible = envId === 'forest';
+    if (env.volcanicGroup) env.volcanicGroup.visible = envId === 'volcanic';
+
+    env.currentEnv = envId;
+  }, []);
+
+  // Update environment when state changes
+  useEffect(() => {
+    applyEnvironment(environment);
+  }, [environment, applyEnvironment]);
 
   // Synchronize config if card prop changes
   useEffect(() => {
@@ -297,19 +407,27 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
 
     // 1. Scene setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x030611); // Deep Ultra Space void
-    scene.fog = new THREE.FogExp2(0x030611, 0.028);
+    const initialEnv = ENVIRONMENTS.find((e) => e.id === environment) || ENVIRONMENTS[0];
+    scene.background = new THREE.Color(initialEnv.bgColor);
+    scene.fog = new THREE.FogExp2(initialEnv.fogColor, initialEnv.fogDensity);
+    sceneRef.current = scene;
 
     // 2. Camera setup
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
     camera.position.set(0, 0.4, 13); // Start far away for fly-in
+    cameraRef.current = camera;
 
     // 3. WebGL Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: 'high-performance',
+      preserveDrawingBuffer: true,
+    });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.35;
+    rendererRef.current = renderer;
     container.appendChild(renderer.domElement);
 
     // 4. OrbitControls
@@ -341,188 +459,57 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
     container.addEventListener('pointermove', onPointerMove);
     container.addEventListener('pointerleave', onPointerLeave);
 
-    // 5. Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.4);
+    // 5. Lighting (dynamically tinted per active environment)
+    const ambientLight = new THREE.AmbientLight(initialEnv.ambientColor, initialEnv.ambientIntensity);
     scene.add(ambientLight);
 
-    const keyLight = new THREE.DirectionalLight(0xffffff, 2.5);
+    const keyLight = new THREE.DirectionalLight(initialEnv.keyColor, initialEnv.keyIntensity);
     keyLight.position.set(5, 8, 8);
     scene.add(keyLight);
 
-    const cyanFillLight = new THREE.DirectionalLight(0x00f2fe, 1.8);
+    const cyanFillLight = new THREE.DirectionalLight(initialEnv.fillColor, initialEnv.fillIntensity);
     cyanFillLight.position.set(-6, -3, 6);
     scene.add(cyanFillLight);
 
-    const magentaRimLight = new THREE.PointLight(0xa855f7, 2.8, 25);
+    const magentaRimLight = new THREE.PointLight(initialEnv.rimColor, initialEnv.rimIntensity, 25);
     magentaRimLight.position.set(0, 5, -5);
     scene.add(magentaRimLight);
 
     // =========================================================================
-    // 6. ANIMATED POKÉMON UNIVERSE BACKGROUND
+    // 6. 3D BACKGROUND ENVIRONMENTS (Starlight, Laboratory, Forest, Volcanic)
     // =========================================================================
+    const starlightObj = buildStarlightEnvironment();
+    const labObj = buildLaboratoryEnvironment();
+    const forestObj = buildForestEnvironment();
+    const volcObj = buildVolcanicEnvironment();
 
-    // 6a. Starfield (1,200 multi-colored stars in Pokémon galaxy)
-    const starCount = 1200;
-    const starGeo = new THREE.BufferGeometry();
-    const starPositions = new Float32Array(starCount * 3);
-    const starColors = new Float32Array(starCount * 3);
+    scene.add(starlightObj.group);
+    scene.add(labObj.group);
+    scene.add(forestObj.group);
+    scene.add(volcObj.group);
 
-    const colorPalette = [
-      new THREE.Color(0x38bdf8), // sapphire
-      new THREE.Color(0xfacc15), // electric gold
-      new THREE.Color(0xc084fc), // psychic violet
-      new THREE.Color(0xffffff), // starlight white
-      new THREE.Color(0xf43f5e), // fire crimson
-    ];
+    // Set initial visibility
+    starlightObj.group.visible = environment === 'starlight';
+    labObj.group.visible = environment === 'laboratory';
+    forestObj.group.visible = environment === 'forest';
+    volcObj.group.visible = environment === 'volcanic';
 
-    for (let i = 0; i < starCount; i++) {
-      const i3 = i * 3;
-      starPositions[i3] = (Math.random() - 0.5) * 55;
-      starPositions[i3 + 1] = (Math.random() - 0.5) * 40;
-      starPositions[i3 + 2] = (Math.random() - 0.5) * 50;
-
-      const col = colorPalette[Math.floor(Math.random() * colorPalette.length)];
-      starColors[i3] = col.r;
-      starColors[i3 + 1] = col.g;
-      starColors[i3 + 2] = col.b;
-    }
-
-    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-    starGeo.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
-
-    const starMat = new THREE.PointsMaterial({
-      size: 0.08,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-    });
-    const starField = new THREE.Points(starGeo, starMat);
-    scene.add(starField);
-
-    // 6b. Drifting Cosmic Nebula Cloud
-    const nebulaCount = 60;
-    const nebulaGeo = new THREE.BufferGeometry();
-    const nebulaPositions = new Float32Array(nebulaCount * 3);
-    for (let i = 0; i < nebulaCount * 3; i += 3) {
-      nebulaPositions[i] = (Math.random() - 0.5) * 30;
-      nebulaPositions[i + 1] = (Math.random() - 0.5) * 20;
-      nebulaPositions[i + 2] = -6 + (Math.random() - 0.5) * 15;
-    }
-    nebulaGeo.setAttribute('position', new THREE.BufferAttribute(nebulaPositions, 3));
-    const nebulaMat = new THREE.PointsMaterial({
-      color: 0x6366f1,
-      size: 1.8,
-      transparent: true,
-      opacity: 0.12,
-      blending: THREE.AdditiveBlending,
-    });
-    const nebula = new THREE.Points(nebulaGeo, nebulaMat);
-    scene.add(nebula);
-
-    // 6c. Floating Pokémon Elemental Energy Orbs (Fire, Water, Electric, Grass, Psychic, Dark)
-    const energyTypes = [
-      { name: 'Fire', color: 0xef4444, radius: 5.2, speed: 0.4, yOffset: 1.2 },
-      { name: 'Water', color: 0x0ea5e9, radius: 6.0, speed: -0.32, yOffset: -0.8 },
-      { name: 'Electric', color: 0xeab308, radius: 4.8, speed: 0.52, yOffset: 2.1 },
-      { name: 'Grass', color: 0x10b981, radius: 6.5, speed: -0.28, yOffset: 0.2 },
-      { name: 'Psychic', color: 0xa855f7, radius: 5.6, speed: 0.36, yOffset: -1.8 },
-      { name: 'Darkness', color: 0x6366f1, radius: 7.2, speed: -0.22, yOffset: 1.6 },
-    ];
-
-    const orbGroup = new THREE.Group();
-    scene.add(orbGroup);
-
-    const orbMeshes = energyTypes.map((et) => {
-      const orbSubGroup = new THREE.Group();
-
-      // Glowing core sphere
-      const sphereGeo = new THREE.SphereGeometry(0.16, 16, 16);
-      const sphereMat = new THREE.MeshStandardMaterial({
-        color: et.color,
-        emissive: et.color,
-        emissiveIntensity: 1.8,
-        roughness: 0.2,
-      });
-      const core = new THREE.Mesh(sphereGeo, sphereMat);
-      orbSubGroup.add(core);
-
-      // Outer aura ring
-      const ringGeo = new THREE.RingGeometry(0.24, 0.32, 24);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: et.color,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.65,
-        blending: THREE.AdditiveBlending,
-      });
-      const ring = new THREE.Mesh(ringGeo, ringMat);
-      orbSubGroup.add(ring);
-
-      // Light emitted from each energy orb
-      const orbLight = new THREE.PointLight(et.color, 1.2, 7);
-      orbSubGroup.add(orbLight);
-
-      orbGroup.add(orbSubGroup);
-      return { group: orbSubGroup, config: et, ring };
-    });
-
-    // 6d. Holographic Battle Stadium Dais / Hall of Fame Platform
-    const stadiumGroup = new THREE.Group();
-    stadiumGroup.position.y = -3.8;
-    scene.add(stadiumGroup);
-
-    // Outer Glowing Battle Ring
-    const outerRingGeo = new THREE.RingGeometry(3.6, 3.85, 48);
-    const outerRingMat = new THREE.MeshBasicMaterial({
-      color: 0x00f2fe,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.7,
-      blending: THREE.AdditiveBlending,
-    });
-    const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
-    outerRing.rotation.x = Math.PI * 0.5;
-    stadiumGroup.add(outerRing);
-
-    // Middle Concentric Ring
-    const midRingGeo = new THREE.RingGeometry(2.4, 2.5, 48);
-    const midRingMat = new THREE.MeshBasicMaterial({
-      color: 0xa855f7,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.5,
-      blending: THREE.AdditiveBlending,
-    });
-    const midRing = new THREE.Mesh(midRingGeo, midRingMat);
-    midRing.rotation.x = Math.PI * 0.5;
-    stadiumGroup.add(midRing);
-
-    // Center Etched Pokéball Ring Platform
-    const pokeRingGeo = new THREE.RingGeometry(1.2, 1.28, 36);
-    const pokeRingMat = new THREE.MeshBasicMaterial({
-      color: 0xfacc15,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.8,
-      blending: THREE.AdditiveBlending,
-    });
-    const pokeRing = new THREE.Mesh(pokeRingGeo, pokeRingMat);
-    pokeRing.rotation.x = Math.PI * 0.5;
-    stadiumGroup.add(pokeRing);
-
-    // Holographic Pillar of Light beam
-    const cylinderGeo = new THREE.CylinderGeometry(2.4, 3.6, 5.0, 32, 1, true);
-    const cylinderMat = new THREE.MeshBasicMaterial({
-      color: 0x00f2fe,
-      transparent: true,
-      opacity: 0.06,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
-    });
-    const beam = new THREE.Mesh(cylinderGeo, cylinderMat);
-    beam.position.y = 2.5;
-    stadiumGroup.add(beam);
+    // Store references for dynamic switching and per-frame animations
+    envObjectsRef.current = {
+      currentEnv: environment,
+      ambientLight,
+      keyLight,
+      fillLight: cyanFillLight,
+      rimLight: magentaRimLight,
+      starlightGroup: starlightObj.group,
+      laboratoryGroup: labObj.group,
+      forestGroup: forestObj.group,
+      volcanicGroup: volcObj.group,
+      starlightObjects: starlightObj,
+      laboratoryObjects: labObj,
+      forestObjects: forestObj,
+      volcanicObjects: volcObj,
+    };
 
     // =========================================================================
     // 7. BUILD 3D VCA SLAB
@@ -944,24 +931,83 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
         slabGroup.rotation.y += 0.012;
       }
 
-      // Rotate Starfield slowly
-      starField.rotation.y = elapsedTime * 0.015;
-      starField.rotation.x = Math.sin(elapsedTime * 0.008) * 0.05;
+      // Update active environment animations
+      const curEnv = envObjectsRef.current.currentEnv;
+      if (curEnv === 'starlight' && envObjectsRef.current.starlightObjects) {
+        const { starField, orbMeshes, stadiumRings } = envObjectsRef.current.starlightObjects;
+        // Rotate Starfield slowly
+        starField.rotation.y = elapsedTime * 0.015;
+        starField.rotation.x = Math.sin(elapsedTime * 0.008) * 0.05;
 
-      // Orbit Elemental Pokémon Energy Orbs
-      orbMeshes.forEach(({ group, config: et, ring }) => {
-        const angle = elapsedTime * et.speed;
-        group.position.x = Math.cos(angle) * et.radius;
-        group.position.z = Math.sin(angle) * et.radius;
-        group.position.y = et.yOffset + Math.sin(elapsedTime * 1.5 + et.radius) * 0.35;
-        ring.rotation.z = elapsedTime * 1.2;
-        ring.lookAt(camera.position);
-      });
+        // Orbit Elemental Pokémon Energy Orbs
+        orbMeshes.forEach(({ group, config: et, ring }) => {
+          const angle = elapsedTime * et.speed;
+          group.position.x = Math.cos(angle) * et.radius;
+          group.position.z = Math.sin(angle) * et.radius;
+          group.position.y = et.yOffset + Math.sin(elapsedTime * 1.5 + et.radius) * 0.35;
+          ring.rotation.z = elapsedTime * 1.2;
+          ring.lookAt(camera.position);
+        });
 
-      // Rotate Stadium Rings
-      outerRing.rotation.z = -elapsedTime * 0.15;
-      midRing.rotation.z = elapsedTime * 0.22;
-      pokeRing.rotation.z = -elapsedTime * 0.35;
+        // Rotate Stadium Rings
+        stadiumRings.outer.rotation.z = -elapsedTime * 0.15;
+        stadiumRings.mid.rotation.z = elapsedTime * 0.22;
+        stadiumRings.poke.rotation.z = -elapsedTime * 0.35;
+      } else if (curEnv === 'laboratory' && envObjectsRef.current.laboratoryObjects) {
+        const lab = envObjectsRef.current.laboratoryObjects;
+        lab.hexRing.rotation.z = elapsedTime * 0.15;
+        lab.outerTechRing.rotation.z = -elapsedTime * 0.2;
+        lab.innerReticleRing.rotation.z = elapsedTime * 0.3;
+        lab.containmentBeam.rotation.y = elapsedTime * 0.1;
+
+        // Rise digital data matrix motes
+        const pos = lab.matrixPositions;
+        for (let i = 1; i < pos.length; i += 3) {
+          pos[i] += 0.022;
+          if (pos[i] > 3.8) {
+            pos[i] = -3.8;
+          }
+        }
+        lab.matrixPoints.geometry.attributes.position.needsUpdate = true;
+      } else if (curEnv === 'forest' && envObjectsRef.current.forestObjects) {
+        const forest = envObjectsRef.current.forestObjects;
+        // Fireflies sinusoidal floating bob
+        const pos = forest.fireflyPositions;
+        const base = forest.fireflyBasePositions;
+        for (let i = 0; i < pos.length; i += 3) {
+          pos[i] = base[i] + Math.sin(elapsedTime * 1.2 + i) * 0.45;
+          pos[i + 1] = base[i + 1] + Math.cos(elapsedTime * 0.9 + i * 1.3) * 0.35;
+          pos[i + 2] = base[i + 2] + Math.sin(elapsedTime * 0.7 + i * 0.8) * 0.4;
+        }
+        forest.fireflyPoints.geometry.attributes.position.needsUpdate = true;
+
+        // Rotate ancient rune rings slowly
+        forest.runeRings.forEach((rr, idx) => {
+          rr.rotation.z = (idx % 2 === 0 ? 1 : -1) * elapsedTime * 0.08;
+        });
+
+        // Wisps floating organically
+        forest.wisps.forEach((wisp, idx) => {
+          const angle = elapsedTime * 0.35 * (idx % 2 === 0 ? 1 : -1) + idx * 2.0;
+          wisp.position.x = Math.cos(angle) * (3.2 + idx * 0.6);
+          wisp.position.z = Math.sin(angle) * (3.2 + idx * 0.6);
+          wisp.position.y = -0.5 + Math.sin(elapsedTime * 1.5 + idx) * 0.6;
+        });
+      } else if (curEnv === 'volcanic' && envObjectsRef.current.volcanicObjects) {
+        const volc = envObjectsRef.current.volcanicObjects;
+        const pos = volc.emberPositions;
+        for (let i = 0; i < pos.length; i += 3) {
+          pos[i + 1] += 0.025;
+          pos[i] += Math.sin(elapsedTime * 2.0 + i) * 0.005;
+          if (pos[i + 1] > 4.5) {
+            pos[i + 1] = -3.8;
+          }
+        }
+        volc.emberPoints.geometry.attributes.position.needsUpdate = true;
+        volc.magmaRings.forEach((mr, idx) => {
+          mr.rotation.z = (idx % 2 === 0 ? 1 : -1) * elapsedTime * 0.12;
+        });
+      }
 
       // Pulse NFC badge
       const nfcPulse = 1.0 + Math.sin(elapsedTime * 4.5) * 0.08;
@@ -991,6 +1037,9 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
       container.removeEventListener('pointerleave', onPointerLeave);
       cancelAnimationFrame(animationFrameId);
       renderer.dispose();
+      sceneRef.current = null;
+      cameraRef.current = null;
+      rendererRef.current = null;
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
@@ -1123,6 +1172,20 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
     }, 280);
   };
 
+  const handleSelectCondition = (tier: ConditionTier) => {
+    setConfig((prev) => ({
+      ...prev,
+      condition: tier.name,
+      grade: tier.fullGradeString,
+      subGrade: tier.subGrade,
+      centeringScore: tier.defaultScores.centering,
+      cornersScore: tier.defaultScores.corners,
+      edgesScore: tier.defaultScores.edges,
+      surfaceScore: tier.defaultScores.surface,
+    }));
+    setIsSaved(false);
+  };
+
   if (!card) return null;
 
   return (
@@ -1133,6 +1196,9 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
     >
       {/* 3D WebGL Canvas Container */}
       <div ref={containerRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
+
+      {/* Dynamic Slab Grade Badge (Interactive Corner Seal) */}
+      <SlabGradeBadge card={card} config={config} onSelectCondition={handleSelectCondition} />
 
       {/* Top HUD: VCA Branding & Actions */}
       <div className="absolute top-4 left-4 right-4 flex items-center justify-between pointer-events-none">
@@ -1148,6 +1214,29 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
         </div>
 
         <div className="flex items-center gap-2 pointer-events-auto">
+          {/* Quick Environment Preset Pill */}
+          <button
+            onClick={() => {
+              const currentIndex = ENVIRONMENTS.findIndex((e) => e.id === environment);
+              const nextEnv = ENVIRONMENTS[(currentIndex + 1) % ENVIRONMENTS.length];
+              setEnvironment(nextEnv.id);
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-slate-900/85 hover:bg-slate-800 text-slate-200 hover:text-white border border-slate-700/80 hover:border-cyan-400/80 backdrop-blur-md text-xs font-bold tracking-wider uppercase transition-all shadow-lg hover:scale-105 active:scale-95 cursor-pointer"
+            title={`Environment: ${currentEnvOption.name} (Click to cycle)`}
+          >
+            <span>{currentEnvOption.emoji}</span>
+            <span className="hidden md:inline font-mono text-[11px] text-cyan-300">{currentEnvOption.name}</span>
+          </button>
+
+          <button
+            onClick={() => setShowGifModal(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-slate-900/85 hover:bg-slate-800 text-cyan-400 hover:text-cyan-300 border border-cyan-500/40 backdrop-blur-md text-xs font-bold tracking-wider uppercase transition-all shadow-lg hover:scale-105 active:scale-95 cursor-pointer shadow-cyan-500/10"
+            title="Export 3D Slab as Animated GIF"
+          >
+            <Film className="w-4 h-4 text-cyan-400" />
+            <span className="hidden sm:inline">EXPORT GIF</span>
+          </button>
+
           <button
             onClick={() => setShowCustomizer((prev) => !prev)}
             className={`flex items-center gap-2 px-3.5 py-2 rounded-full backdrop-blur-md text-xs font-bold tracking-wider uppercase transition-all shadow-lg cursor-pointer ${
@@ -1197,6 +1286,115 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
             >
               <X className="w-4 h-4" />
             </button>
+          </div>
+
+          {/* 3D Background Environment Dropdown Menu */}
+          <div className="space-y-1.5 shrink-0 relative z-30">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-mono font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                <Compass className="w-3.5 h-3.5 text-cyan-400" />
+                <span>3D Environment</span>
+              </label>
+              <span className="text-[10px] font-mono text-cyan-400 font-bold uppercase">
+                {currentEnvOption.badge}
+              </span>
+            </div>
+
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsEnvDropdownOpen((prev) => !prev)}
+                className={`w-full flex items-center justify-between p-2.5 rounded-2xl border transition-all cursor-pointer shadow-md group ${
+                  isEnvDropdownOpen
+                    ? 'bg-slate-800/95 border-cyan-400 ring-1 ring-cyan-400/50 text-white'
+                    : 'bg-slate-950/80 hover:bg-slate-900 border-slate-800 hover:border-cyan-500/40 text-slate-200'
+                }`}
+                aria-haspopup="listbox"
+                aria-expanded={isEnvDropdownOpen}
+                title="Switch 3D Environment (Starlight, Laboratory, Forest, Volcanic)"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="text-lg p-1.5 rounded-xl bg-slate-900 border border-slate-700/60 shrink-0 shadow-inner">
+                    {currentEnvOption.emoji}
+                  </span>
+                  <div className="text-left min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-black tracking-wide text-white group-hover:text-cyan-300 transition-colors">
+                        {currentEnvOption.name}
+                      </span>
+                      <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-400/30">
+                        LIVE
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                      {currentEnvOption.tagline}
+                    </p>
+                  </div>
+                </div>
+                <ChevronDown
+                  className={`w-4 h-4 text-cyan-400 shrink-0 transition-transform duration-200 ml-2 ${
+                    isEnvDropdownOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
+
+              {/* Dropdown Options Popup */}
+              {isEnvDropdownOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setIsEnvDropdownOpen(false)}
+                  />
+                  <div
+                    className="absolute top-full left-0 right-0 mt-1.5 p-1.5 bg-slate-900/98 backdrop-blur-2xl border border-cyan-500/50 rounded-2xl shadow-2xl z-50 space-y-1 animate-in fade-in-50 zoom-in-95 duration-150"
+                    role="listbox"
+                  >
+                    <div className="px-2 py-1 text-[9px] font-mono font-bold tracking-wider uppercase text-cyan-400/90 border-b border-slate-800 flex items-center justify-between">
+                      <span>Select Environment Theme</span>
+                      <span className="text-[8px] text-slate-500">4 PRESETS</span>
+                    </div>
+                    {ENVIRONMENTS.map((env) => {
+                      const isSelected = environment === env.id;
+                      return (
+                        <button
+                          key={env.id}
+                          type="button"
+                          onClick={() => {
+                            setEnvironment(env.id);
+                            setIsEnvDropdownOpen(false);
+                          }}
+                          role="option"
+                          aria-selected={isSelected}
+                          className={`w-full flex items-center justify-between p-2 rounded-xl text-left transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-cyan-500/20 border border-cyan-400/70 text-white shadow-sm ring-1 ring-cyan-400/30'
+                              : 'hover:bg-slate-800/90 border border-transparent text-slate-300 hover:text-white'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <span className="text-lg shrink-0 p-1 rounded-lg bg-slate-950 border border-slate-800">
+                              {env.emoji}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-black tracking-wide">{env.name}</span>
+                                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                                  {env.badge}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                                {env.tagline}
+                              </p>
+                            </div>
+                          </div>
+                          {isSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0 ml-2" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Tab Navigation */}
@@ -1333,6 +1531,62 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
                 <div className="bg-cyan-950/30 border border-cyan-500/30 rounded-xl p-2.5 text-[11px] text-cyan-300 flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
                   <span>Edits render immediately onto the 3D holographic canvas!</span>
+                </div>
+
+                {/* 0. Card Condition & Dynamic Slab Grade Tier */}
+                <div className="space-y-2 p-3 rounded-xl bg-slate-950/90 border border-slate-800 shadow-inner">
+                  <div className="flex items-center justify-between text-xs">
+                    <label className="font-mono text-slate-200 font-bold uppercase flex items-center gap-1.5">
+                      <Award className="w-3.5 h-3.5 text-cyan-400" /> Card Condition
+                    </label>
+                    <span className="text-[10px] text-cyan-400 font-mono font-bold">
+                      {config.condition || 'Gem Mint'}
+                    </span>
+                  </div>
+
+                  {/* Input for user input of card condition */}
+                  <input
+                    type="text"
+                    value={config.condition !== undefined ? config.condition : 'Gem Mint'}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const matchedTier = resolveConditionTier(val);
+                      setConfig((prev) => ({
+                        ...prev,
+                        condition: val,
+                        grade: matchedTier.fullGradeString,
+                        subGrade: matchedTier.subGrade,
+                      }));
+                      setIsSaved(false);
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono font-bold text-white focus:outline-none focus:border-cyan-400"
+                    placeholder="e.g. Gem Mint, Pristine 10, Mint 9, Near Mint..."
+                  />
+
+                  {/* Quick Condition Tiers Grid */}
+                  <div className="grid grid-cols-2 gap-1.5 pt-1">
+                    {CONDITION_TIERS.map((tier) => {
+                      const currentConditionStr = (config.condition || 'Gem Mint').toLowerCase();
+                      const isSelected = currentConditionStr.includes(tier.name.toLowerCase().split(' ')[0]);
+                      return (
+                        <button
+                          key={tier.id}
+                          type="button"
+                          onClick={() => handleSelectCondition(tier)}
+                          className={`p-2 rounded-lg text-left text-xs font-mono border transition-all cursor-pointer flex items-center justify-between ${
+                            isSelected
+                              ? `${tier.cardBg} ${tier.borderClass} ${tier.textColor} font-bold ring-1`
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:border-slate-700'
+                          }`}
+                        >
+                          <span className="text-[11px] truncate">{tier.name}</span>
+                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-black/50 text-cyan-300 ml-1">
+                            {tier.gradeNumber}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {/* 1. Grade Header */}
@@ -1664,6 +1918,54 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
                   </p>
                 </div>
 
+                {/* 3D Background Environment Selector Cards */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-mono font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                      <Compass className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>3D Background Scene</span>
+                    </label>
+                    <span className="text-[10px] font-mono text-cyan-400 font-bold uppercase">
+                      {currentEnvOption.badge}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {ENVIRONMENTS.map((env) => {
+                      const isSelected = environment === env.id;
+                      return (
+                        <button
+                          key={env.id}
+                          type="button"
+                          onClick={() => setEnvironment(env.id)}
+                          className={`p-2.5 rounded-2xl text-left transition-all border relative overflow-hidden group cursor-pointer flex flex-col justify-between ${
+                            isSelected
+                              ? 'bg-slate-900 border-cyan-400 shadow-lg shadow-cyan-500/20 ring-1 ring-cyan-400'
+                              : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700 hover:bg-slate-900/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between w-full mb-1">
+                            <span className="text-lg p-1 rounded-lg bg-slate-950 border border-slate-800">
+                              {env.emoji}
+                            </span>
+                            {isSelected && (
+                              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                            )}
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-slate-200 group-hover:text-cyan-300 transition-colors">
+                              {env.name}
+                            </div>
+                            <div className="text-[9px] text-slate-400 mt-0.5 line-clamp-1 font-mono">
+                              {env.badge}
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* Holo Foil Pattern Selector */}
                 <div className="space-y-2">
                   <label className="font-mono text-slate-300 text-xs font-bold uppercase flex items-center justify-between">
@@ -1825,6 +2127,15 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
                 </>
               )}
             </button>
+
+            <button
+              type="button"
+              onClick={() => setShowGifModal(true)}
+              className="w-full mt-2 py-2.5 rounded-xl font-mono text-xs font-bold tracking-wider uppercase transition-all flex items-center justify-center gap-2 bg-slate-800/90 hover:bg-slate-750 text-cyan-400 hover:text-cyan-300 border border-cyan-500/30 hover:border-cyan-400/60 active:scale-95 cursor-pointer shadow-md"
+            >
+              <Film className="w-4 h-4 text-cyan-400" />
+              <span>EXPORT 3D SLAB AS GIF</span>
+            </button>
           </div>
         </div>
       )}
@@ -1883,6 +2194,16 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
             <span>Flip 180°</span>
           </button>
 
+          {/* Export GIF Button */}
+          <button
+            onClick={() => setShowGifModal(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800/80 hover:bg-cyan-500/20 text-cyan-300 hover:text-cyan-200 text-xs font-bold border border-cyan-500/40 transition-all active:scale-95 cursor-pointer shadow-sm"
+            title="Export 3D Slab as Animated GIF"
+          >
+            <Film className="w-4 h-4 text-cyan-400" />
+            <span>Export GIF</span>
+          </button>
+
           {/* Reset Camera */}
           <button
             onClick={handleReset}
@@ -1903,27 +2224,62 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
         </div>
 
         {/* Live Card Valuation Banner */}
-        <div className="bg-slate-950/85 backdrop-blur-md border border-slate-800 rounded-xl px-4 py-1.5 w-full flex items-center justify-between text-xs pointer-events-auto">
-          <div className="flex items-center gap-2">
-            <span className="px-2 py-0.5 rounded bg-cyan-400/20 text-cyan-300 font-bold border border-cyan-400/40">
-              {config.grade}
-            </span>
-            <span className="text-white font-bold text-sm font-mono">${card.psa10Price.toFixed(2)}</span>
-            <span className="text-emerald-400 text-[11px] font-semibold">
-              +{Math.round(((card.psa10Price - card.rawPrice) / card.rawPrice) * 100)}% vs Raw
-            </span>
-          </div>
-          <div className="text-slate-400 flex items-center gap-1 font-mono">
-            <span>Raw Market:</span>
-            <span className="text-slate-200 font-semibold">${card.rawPrice.toFixed(2)}</span>
-          </div>
-        </div>
+        {(() => {
+          const tier = resolveConditionTier(config.condition, config.grade, config.subGrade);
+          const tierPrice =
+            tier.pricingTier === 'psa10'
+              ? card.psa10Price
+              : tier.pricingTier === 'psa9'
+              ? card.psa9Price
+              : tier.pricingTier === 'psa8'
+              ? card.psa8Price
+              : card.rawPrice;
+          const delta =
+            card.rawPrice > 0 ? Math.round(((tierPrice - card.rawPrice) / card.rawPrice) * 100) : 0;
+
+          return (
+            <div className="bg-slate-950/85 backdrop-blur-md border border-slate-800 rounded-xl px-4 py-1.5 w-full flex items-center justify-between text-xs pointer-events-auto">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded bg-cyan-400/20 text-cyan-300 font-bold border border-cyan-400/40">
+                  {tier.name}
+                </span>
+                <span className="text-white font-bold text-sm font-mono">${tierPrice.toFixed(2)}</span>
+                {delta !== 0 && (
+                  <span
+                    className={`text-[11px] font-semibold ${
+                      delta > 0 ? 'text-emerald-400' : 'text-rose-400'
+                    }`}
+                  >
+                    {delta > 0 ? `+${delta}%` : `${delta}%`} vs Raw
+                  </span>
+                )}
+              </div>
+              <div className="text-slate-400 flex items-center gap-1 font-mono">
+                <span>Raw Market:</span>
+                <span className="text-slate-200 font-semibold">${card.rawPrice.toFixed(2)}</span>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* NFC Cryptographic Authenticity Modal */}
       {showNfcModal && (
         <NfcAuthModal card={card} config={config} onClose={() => setShowNfcModal(false)} />
       )}
+
+      {/* Animated 3D Slab GIF Export Modal */}
+      <SlabGifExportModal
+        isOpen={showGifModal}
+        onClose={() => setShowGifModal(false)}
+        card={card}
+        config={config}
+        sceneRef={sceneRef}
+        cameraRef={cameraRef}
+        rendererRef={rendererRef}
+        slabGroupRef={slabGroupRef}
+        holoUniformsRef={holoUniformsRef}
+      />
     </div>
   );
 };

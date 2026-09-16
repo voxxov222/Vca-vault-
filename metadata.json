@@ -1,6 +1,6 @@
 {
   "name": "PokéVault",
-  "description": "Pokémon card portfolio, live camera scanning with Gemini Vision, real-time market pricing, and 3D holographic slab viewer.",
+  "description": "Pokémon card portfolio, live camera scanning with Gemini Vision, real-time market pricing, and interactive 3D holographic slab viewer with animated GIF export.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

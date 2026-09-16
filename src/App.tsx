@@ -174,8 +174,12 @@ function PokeVaultApp() {
         )}
 
         {activeTab === 'scanner' && (
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 h-[calc(100vh-140px)] min-h-[580px]">
-            <LiveScanner onScanSaved={() => setActiveTab('vault')} />
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 min-h-[calc(100vh-140px)]">
+            <LiveScanner
+              onScanSaved={() => setActiveTab('vault')}
+              onOpen3DSlab={(card) => setSelectedCardFor3D(card)}
+              onOpenCardDetail={(card) => setSelectedCardForDetail(card)}
+            />
           </div>
         )}
 

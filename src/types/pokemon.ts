@@ -70,6 +70,7 @@ export interface SlabConfig {
   labelColor: LabelColor;
   grade: string; // e.g. "#10 GRADE"
   subGrade: string; // e.g. "GEM MINT"
+  condition?: string; // e.g. "Gem Mint", "Pristine", "Mint", "Near Mint", etc.
   serialNumber: string; // e.g. "VCA-26-0101"
   customCardTitle?: string; // Dynamic custom card title override
   customSubtitle?: string; // Dynamic set / edition subtitle override
