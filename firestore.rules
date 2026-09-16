@@ -1,0 +1,102 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation helper for CardItem
+    function isValidCardItem(data) {
+      return data.userId is string && data.userId == request.auth.uid
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.rawPrice is number && data.rawPrice >= 0
+        && (!('setName' in data) || (data.setName is string && data.setName.size() <= 100))
+        && (!('number' in data) || (data.number is string && data.number.size() <= 30))
+        && (!('variant' in data) || (data.variant is string && data.variant.size() <= 50))
+        && (!('rarity' in data) || (data.rarity is string && data.rarity.size() <= 50))
+        && (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 500))
+        && (!('isFavorite' in data) || data.isFavorite is bool)
+        && (!('psa10Price' in data) || (data.psa10Price is number && data.psa10Price >= 0))
+        && (!('psa9Price' in data) || (data.psa9Price is number && data.psa9Price >= 0))
+        && (!('psa8Price' in data) || (data.psa8Price is number && data.psa8Price >= 0))
+        && (!('customGrade' in data) || (data.customGrade is string && data.customGrade.size() <= 20))
+        && (!('certNumber' in data) || (data.certNumber is string && data.certNumber.size() <= 30));
+    }
+
+    // Validation helper for PortfolioSnapshot
+    function isValidSnapshot(data) {
+      return data.userId is string && data.userId == request.auth.uid
+        && data.totalRawValue is number && data.totalRawValue >= 0
+        && data.totalPsa10Value is number && data.totalPsa10Value >= 0
+        && data.cardCount is number && data.cardCount >= 0
+        && data.recordedAt is string && data.recordedAt.size() <= 50;
+    }
+
+    // Validation helper for UserProfile
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid
+        && data.email is string && data.email.size() <= 100
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100))
+        && (!('currency' in data) || (data.currency is string && data.currency.size() <= 10));
+    }
+
+    // User subcollections
+    match /users/{userId} {
+      // Test connection doc
+      match /test/connection {
+        allow read, write: if isSignedIn();
+      }
+
+      // Vault collection
+      match /vault/{cardDocId} {
+        allow get: if isOwner(userId) && isValidId(cardDocId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(cardDocId) && isValidCardItem(incoming());
+        allow update: if isOwner(userId) && isValidId(cardDocId) && isValidCardItem(incoming())
+          && incoming().userId == existing().userId;
+        allow delete: if isOwner(userId) && isValidId(cardDocId);
+      }
+
+      // Portfolio snapshots collection
+      match /portfolioHistory/{snapshotId} {
+        allow get: if isOwner(userId) && isValidId(snapshotId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(snapshotId) && isValidSnapshot(incoming());
+        allow delete: if isOwner(userId) && isValidId(snapshotId);
+      }
+
+      // Profile info document
+      match /profile/info {
+        allow get: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidUserProfile(incoming());
+      }
+    }
+
+    // Global test connection
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

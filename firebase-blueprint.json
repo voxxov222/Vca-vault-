@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "CardItem": {
+      "title": "CardItem",
+      "description": "A Pokémon card stored in the user's vault",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "cardId": { "type": "string", "maxLength": 100 },
+        "name": { "type": "string", "maxLength": 100 },
+        "setName": { "type": "string", "maxLength": 100 },
+        "setId": { "type": "string", "maxLength": 50 },
+        "number": { "type": "string", "maxLength": 30 },
+        "rarity": { "type": "string", "maxLength": 50 },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "imageUrlHiRes": { "type": "string", "maxLength": 500 },
+        "language": { "type": "string", "maxLength": 10 },
+        "variant": { "type": "string", "maxLength": 50 },
+        "rawPrice": { "type": "number" },
+        "psa10Price": { "type": "number" },
+        "psa9Price": { "type": "number" },
+        "psa8Price": { "type": "number" },
+        "isFavorite": { "type": "boolean" },
+        "customGrade": { "type": "string", "maxLength": 20 },
+        "certNumber": { "type": "string", "maxLength": 30 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "name", "rawPrice"]
+    },
+    "PortfolioSnapshot": {
+      "title": "PortfolioSnapshot",
+      "description": "Historical portfolio total value snapshot for tracking value over time",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "totalRawValue": { "type": "number" },
+        "totalPsa10Value": { "type": "number" },
+        "cardCount": { "type": "number" },
+        "recordedAt": { "type": "string" }
+      },
+      "required": ["userId", "totalRawValue", "totalPsa10Value", "cardCount", "recordedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile settings and stats",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string", "maxLength": 100 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "currency": { "type": "string", "maxLength": 10 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "email"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/vault/{cardDocId}": {
+      "schema": { "$ref": "#/entities/CardItem" },
+      "description": "User-owned vault cards"
+    },
+    "/users/{userId}/portfolioHistory/{snapshotId}": {
+      "schema": { "$ref": "#/entities/PortfolioSnapshot" },
+      "description": "User portfolio snapshots over time"
+    },
+    "/users/{userId}/profile/info": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User private profile and preferences"
+    }
+  }
+}
