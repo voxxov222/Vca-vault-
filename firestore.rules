@@ -59,6 +59,15 @@ service cloud.firestore {
       return data.userId is string && data.userId == request.auth.uid
         && data.email is string && data.email.size() <= 100
         && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100))
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 2048))
+        && (!('headerImageUrl' in data) || (data.headerImageUrl is string && data.headerImageUrl.size() <= 2048))
+        && (!('bio' in data) || (data.bio is string && data.bio.size() <= 1000))
+        && (!('favoritePokemon' in data) || (data.favoritePokemon is string && data.favoritePokemon.size() <= 50))
+        && (!('collectorRank' in data) || (data.collectorRank is string && data.collectorRank.size() <= 50))
+        && (!('featuredCardId' in data) || (data.featuredCardId is string && data.featuredCardId.size() <= 100))
+        && (!('sections' in data) || data.sections is list)
+        && (!('mcpApiKey' in data) || (data.mcpApiKey is string && data.mcpApiKey.size() <= 100))
+        && (!('mcpCustomEndpoint' in data) || (data.mcpCustomEndpoint is string && data.mcpCustomEndpoint.size() <= 500))
         && (!('currency' in data) || (data.currency is string && data.currency.size() <= 10));
     }
 

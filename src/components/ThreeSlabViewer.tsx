@@ -512,71 +512,110 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
     };
 
     // =========================================================================
-    // 7. BUILD 3D VCA SLAB
+    // 7. BUILD 3D VCA SLAB (Physical Blueprint: 80.00mm x 135.00mm x 9.05mm)
     // =========================================================================
     const slabGroup = new THREE.Group();
     slabGroupRef.current = slabGroup;
     scene.add(slabGroup);
 
-    const slabWidth = 3.6;
-    const slabHeight = 5.4;
-    const slabDepth = 0.22;
+    // Precise physical scale derived from images.png blueprint:
+    // Width: 80.00 mm -> 3.60
+    // Height: 135.00 mm -> 6.075 (3.60 * 135 / 80)
+    // Depth: 9.05 mm -> 0.407 (3.60 * 9.05 / 80)
+    const slabWidth = 3.60;
+    const slabHeight = 6.075;
+    const slabDepth = 0.407;
 
-    // 7a. Acrylic Slab Outer Case
+    // Blueprint sub-dimensions:
+    // Top Label Compartment: 68.00 mm x 20.00 mm (W: 3.06, H: 0.90, Y: 2.3175)
+    const labelWidth = 3.06;
+    const labelHeight = 0.90;
+    const labelPosY = 2.3175;
+
+    // Card Inner Cavity: 64.50 mm x 90.00 mm (W: 2.9025, H: 4.05, Y: -0.56)
+    const cardWidth = 2.9025;
+    const cardHeight = 4.05;
+    const cardPosY = -0.56;
+
+    // 7a. Optical Grade Acrylic Front & Rear Casings
     const initialSlabOpt = SLAB_COLORS.find((sc) => sc.id === config.slabType) || SLAB_COLORS[3];
-    const acrylicGeo = new THREE.BoxGeometry(slabWidth, slabHeight, slabDepth);
     const acrylicMat = new THREE.MeshPhysicalMaterial({
       color: initialSlabOpt.acrylicHex,
       metalness: initialSlabOpt.metalness,
       roughness: initialSlabOpt.roughness,
       transmission: initialSlabOpt.transmission,
-      thickness: 0.6,
+      thickness: 0.85,
       ior: 1.52,
-      reflectivity: 0.9,
+      reflectivity: 0.95,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.02,
       transparent: true,
       opacity: initialSlabOpt.opacity,
     });
     acrylicMatRef.current = acrylicMat;
-    const acrylicMesh = new THREE.Mesh(acrylicGeo, acrylicMat);
+
+    // Outer Main Acrylic Body
+    const outerAcrylicGeo = new THREE.BoxGeometry(slabWidth, slabHeight, slabDepth);
+    const acrylicMesh = new THREE.Mesh(outerAcrylicGeo, acrylicMat);
     slabGroup.add(acrylicMesh);
 
-    // 7b. Acrylic Rim Bevel Wireframe
-    const rimGeo = new THREE.BoxGeometry(slabWidth + 0.04, slabHeight + 0.04, slabDepth * 0.92);
+    // 7b. Frosted Perimeter Ultrasonic Hermetic Weld Joint (Stepped Edge Lip)
+    const weldMat = new THREE.MeshPhysicalMaterial({
+      color: initialSlabOpt.rimHex || 0x38bdf8,
+      roughness: 0.42,
+      metalness: 0.1,
+      transmission: 0.65,
+      transparent: true,
+      opacity: 0.55,
+      ior: 1.48,
+    });
+    const weldGeo = new THREE.BoxGeometry(slabWidth * 0.985, slabHeight * 0.985, slabDepth * 0.22);
+    const weldMesh = new THREE.Mesh(weldGeo, weldMat);
+    slabGroup.add(weldMesh);
+
+    // Acrylic Rim Bevel Highlight Lines
+    const rimGeo = new THREE.BoxGeometry(slabWidth + 0.02, slabHeight + 0.02, slabDepth * 0.94);
     const rimMat = new THREE.MeshBasicMaterial({
       color: initialSlabOpt.rimHex,
       wireframe: true,
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.32,
     });
     rimMatRef.current = rimMat;
     const rimMesh = new THREE.Mesh(rimGeo, rimMat);
     slabGroup.add(rimMesh);
 
-    // 7c. Front Label Plane
-    const labelGeo = new THREE.PlaneGeometry(slabWidth * 0.92, 1.12);
+    // 7c. Top Label Recessed Compartment & Dual-Sided High-Security VCA Labels
+    const labelGeo = new THREE.PlaneGeometry(labelWidth, labelHeight);
+    const maxAniso = renderer.capabilities.getMaxAnisotropy() || 16;
+
     const frontLabelMat = new THREE.MeshBasicMaterial({
       transparent: true,
       side: THREE.FrontSide,
     });
     frontLabelMatRef.current = frontLabelMat;
     const frontLabelMesh = new THREE.Mesh(labelGeo, frontLabelMat);
-    frontLabelMesh.position.set(0, slabHeight * 0.5 - 0.76, 0.015);
+    frontLabelMesh.position.set(0, labelPosY, 0.022);
     slabGroup.add(frontLabelMesh);
 
-    // 7d. Back Label Plane (Security Registry & Subgrades)
+    // Back Security Registry Label
     const backLabelMat = new THREE.MeshBasicMaterial({
       transparent: true,
       side: THREE.BackSide,
     });
     backLabelMatRef.current = backLabelMat;
     const backLabelMesh = new THREE.Mesh(labelGeo, backLabelMat);
-    backLabelMesh.position.set(0, slabHeight * 0.5 - 0.76, -0.015);
+    backLabelMesh.position.set(0, labelPosY, -0.022);
     slabGroup.add(backLabelMesh);
 
-    // Load initial label canvases
+    // Render initial high-resolution VCA label textures
     renderVcaFrontLabel(card, config).then((canvas) => {
       const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = maxAniso;
+      tex.generateMipmaps = true;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
       frontLabelMat.map = tex;
       frontLabelMat.needsUpdate = true;
     });
@@ -584,15 +623,39 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
     renderVcaBackLabel(card, config).then((canvas) => {
       const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = maxAniso;
+      tex.generateMipmaps = true;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
       backLabelMat.map = tex;
       backLabelMat.needsUpdate = true;
     });
 
-    // 7e. Pokémon Card Artwork Plane (Front)
-    const cardWidth = slabWidth * 0.85;
-    const cardHeight = slabHeight * 0.68;
-    const cardGeo = new THREE.PlaneGeometry(cardWidth, cardHeight);
+    // 7d. Internal Card Cavity Bumper Tabs (4 Protective Corners)
+    const bumperGeo = new THREE.BoxGeometry(0.12, 0.12, 0.05);
+    const bumperMat = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      transmission: 0.9,
+      roughness: 0.1,
+      transparent: true,
+      opacity: 0.7,
+    });
+    const halfCW = cardWidth / 2;
+    const halfCH = cardHeight / 2;
+    const bumperPositions: [number, number][] = [
+      [-halfCW + 0.04, cardPosY + halfCH - 0.04],
+      [halfCW - 0.04, cardPosY + halfCH - 0.04],
+      [-halfCW + 0.04, cardPosY - halfCH + 0.04],
+      [halfCW - 0.04, cardPosY - halfCH + 0.04],
+    ];
+    bumperPositions.forEach(([bx, by]) => {
+      const bMesh = new THREE.Mesh(bumperGeo, bumperMat);
+      bMesh.position.set(bx, by, 0);
+      slabGroup.add(bMesh);
+    });
 
+    // 7e. Trading Card Artwork Plane (Front) & Core
+    const cardGeo = new THREE.PlaneGeometry(cardWidth, cardHeight);
     const textureLoader = new THREE.TextureLoader();
     const cardImgUrl = card.imageUrlHiRes || card.imageUrl;
 
@@ -600,14 +663,15 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
       cardImgUrl,
       (loadedTexture) => {
         loadedTexture.colorSpace = THREE.SRGBColorSpace;
+        loadedTexture.anisotropy = maxAniso;
         const cardFrontMat = new THREE.MeshStandardMaterial({
           map: loadedTexture,
-          roughness: 0.22,
-          metalness: 0.12,
+          roughness: 0.18,
+          metalness: 0.08,
           side: THREE.FrontSide,
         });
         const cardFrontMesh = new THREE.Mesh(cardGeo, cardFrontMat);
-        cardFrontMesh.position.set(0, -0.65, 0.02);
+        cardFrontMesh.position.set(0, cardPosY, 0.018);
         slabGroup.add(cardFrontMesh);
 
         // Bind loaded card texture into holographic foil shader
@@ -623,12 +687,12 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
     // Card Back Plane (Standard Pokémon Blue Card Back)
     const cardBackMat = new THREE.MeshStandardMaterial({
       color: 0x1d4ed8,
-      roughness: 0.35,
+      roughness: 0.32,
       metalness: 0.08,
       side: THREE.BackSide,
     });
     const cardBackMesh = new THREE.Mesh(cardGeo, cardBackMat);
-    cardBackMesh.position.set(0, -0.65, -0.02);
+    cardBackMesh.position.set(0, cardPosY, -0.018);
     slabGroup.add(cardBackMesh);
 
     // 7f. Shimmering Iridescent Holographic Foil Shader (Movement & Angular Dispersion Reactive)
@@ -849,7 +913,7 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
       side: THREE.FrontSide,
     });
     const holoMesh = new THREE.Mesh(cardGeo, holoMat);
-    holoMesh.position.set(0, -0.65, 0.028);
+    holoMesh.position.set(0, cardPosY, 0.026);
     slabGroup.add(holoMesh);
 
     // 7g. NFC Holographic Chip Tag (Bottom Right corner)
@@ -887,7 +951,7 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
       side: THREE.DoubleSide,
     });
     const nfcMesh = new THREE.Mesh(nfcGeo, nfcMat);
-    nfcMesh.position.set(slabWidth * 0.34, -slabHeight * 0.5 + 0.46, 0.04);
+    nfcMesh.position.set(slabWidth * 0.35, -slabHeight * 0.5 + 0.38, 0.04);
     slabGroup.add(nfcMesh);
 
     // =========================================================================
@@ -1053,10 +1117,15 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
     if (!card) return;
 
     // 1. Update Front & Back Canvas Textures
+    const maxAniso = rendererRef.current?.capabilities.getMaxAnisotropy() || 16;
     renderVcaFrontLabel(card, config).then((canvas) => {
       if (frontLabelMatRef.current) {
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = maxAniso;
+        tex.generateMipmaps = true;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
         frontLabelMatRef.current.map = tex;
         frontLabelMatRef.current.needsUpdate = true;
       }
@@ -1066,6 +1135,10 @@ export const ThreeSlabViewer: React.FC<ThreeSlabViewerProps> = ({ card, onClose 
       if (backLabelMatRef.current) {
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = maxAniso;
+        tex.generateMipmaps = true;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
         backLabelMatRef.current.map = tex;
         backLabelMatRef.current.needsUpdate = true;
       }

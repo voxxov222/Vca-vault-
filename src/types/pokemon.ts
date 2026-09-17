@@ -44,6 +44,21 @@ export interface CardPricing {
   psa9Price: number;
   psa8Price: number;
   psa10DeltaPercent: number;
+  cgc10Price?: number;
+  bgs95Price?: number;
+  bgs10Price?: number;
+  priceRange?: {
+    low: number;
+    mid: number;
+    high: number;
+    market: number;
+  };
+  historicalTrends?: {
+    day: string;
+    price: number;
+  }[];
+  trend7dPercent?: number;
+  trend30dPercent?: number;
   recentComps: SoldComp[];
 }
 
@@ -134,4 +149,47 @@ export interface PortfolioSnapshot {
   totalPsa10Value: number;
   cardCount: number;
   recordedAt: string;
+}
+
+export interface ProfileSection {
+  id: string;
+  title: string;
+  content: string;
+  type: 'bio' | 'grail' | 'wishlist' | 'trade_policy' | 'mcp_integration' | 'custom';
+  tags?: string[];
+}
+
+export interface UserProfileData {
+  userId: string;
+  email: string;
+  displayName: string;
+  avatarUrl: string;
+  headerImageUrl: string;
+  bio: string;
+  favoritePokemon: string;
+  collectorRank: string;
+  currency: string;
+  featuredCardId?: string;
+  sections: ProfileSection[];
+  mcpApiKey?: string;
+  mcpCustomEndpoint?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface MCPToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: {
+    type: string;
+    properties: Record<string, any>;
+    required?: string[];
+  };
+}
+
+export interface MCPResourceDefinition {
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
 }

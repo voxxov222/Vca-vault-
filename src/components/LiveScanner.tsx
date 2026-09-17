@@ -29,11 +29,17 @@ import {
   Plus,
   ArrowRight,
   TrendingUp,
+  BarChart3,
+  Calculator,
+  Percent,
+  HelpCircle,
+  X,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useVault, generateNextVcaSerial, getDefaultSlabConfig } from '../firebase/VaultContext.tsx';
-import { CardVariant, CARD_VARIANTS, ScanTrayItem, CardItem, SlabType, SlabConfig } from '../types/pokemon.ts';
+import { CardVariant, CARD_VARIANTS, ScanTrayItem, CardItem, SlabType, SlabConfig, CardPricing } from '../types/pokemon.ts';
 import { CONDITION_TIERS, ConditionTier } from './SlabGradeBadge.tsx';
+import { PriceGuideModal } from './PriceGuideModal.tsx';
 
 interface LiveScannerProps {
   onScanSaved?: () => void;
@@ -85,6 +91,11 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
   const [isMultiScan, setIsMultiScan] = useState(true);
   const [language, setLanguage] = useState<'EN' | 'JP'>('EN');
   const [isScanning, setIsScanning] = useState(false);
+  const [autoScanEnabled, setAutoScanEnabled] = useState(true);
+
+  // Reference to identified card card for smooth auto-scrolling
+  const identifiedSectionRef = useRef<HTMLDivElement>(null);
+  const [showPriceGuideModal, setShowPriceGuideModal] = useState(false);
 
   // Recognition detection state
   const [detectedBox, setDetectedBox] = useState<{ ymin: number; xmin: number; ymax: number; xmax: number } | null>(null);
@@ -134,10 +145,21 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
 
   // Card correction & alternative predictions
   const [alternativeGuesses, setAlternativeGuesses] = useState<string[]>([]);
+  const [candidateMatches, setCandidateMatches] = useState<any[]>([]);
   const [showCorrectionDialog, setShowCorrectionDialog] = useState(false);
   const [correctionSearchQuery, setCorrectionSearchQuery] = useState('');
   const [correctionResults, setCorrectionResults] = useState<any[]>([]);
   const [isCorrectionSearching, setIsCorrectionSearching] = useState(false);
+
+  // Confidence score & Low-confidence verification state
+  const [confidenceScore, setConfidenceScore] = useState<number | null>(null);
+  const [pendingLowConfidenceCard, setPendingLowConfidenceCard] = useState<{
+    card: any;
+    variant: CardVariant;
+    confidence: number;
+    livePricing?: any;
+    rawImagePreview?: string;
+  } | null>(null);
 
   // Initialize Serial Number on mount
   useEffect(() => {
@@ -279,10 +301,31 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
     };
   }, [facingMode, activeMode]);
 
-  // Set card and retrieve live pricing
-  const setupIdentifiedCard = async (card: any, variant: CardVariant = 'Normal') => {
+  // Continuous Auto-Scan Interval for Camera Feed
+  useEffect(() => {
+    if (!autoScanEnabled || activeMode !== 'camera' || !cameraActive) return;
+
+    const interval = setInterval(() => {
+      if (!isScanning && videoRef.current && videoRef.current.readyState >= 2) {
+        captureAndRecognize();
+      }
+    }, 2800);
+
+    return () => clearInterval(interval);
+  }, [autoScanEnabled, activeMode, cameraActive, isScanning]);
+
+  // Set card and retrieve live pricing immediately
+  const setupIdentifiedCard = async (card: any, variant: CardVariant = 'Normal', confidence?: number) => {
     setIdentifiedCard(card);
     setSelectedVariant(variant);
+    if (typeof confidence === 'number') {
+      setConfidenceScore(confidence);
+    }
+
+    // Smooth auto-scroll down to the identified card and price guide
+    setTimeout(() => {
+      identifiedSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 150);
 
     try {
       const priceRes = await fetch(
@@ -308,7 +351,7 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
 
   // Capture & Recognize frame from live camera
   const captureAndRecognize = async () => {
-    if (!videoRef.current || isScanning) return;
+    if (!videoRef.current || isScanning || pendingLowConfidenceCard) return;
     const video = videoRef.current;
     if (video.videoWidth === 0 || video.videoHeight === 0) return;
 
@@ -348,27 +391,51 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
         if (data.cardDetected && data.matchedCard) {
           setScannerNotice(null);
           setAlternativeGuesses(data.alternativeGuesses || []);
+          setCandidateMatches(data.candidateMatches || []);
           const bbox = data.boundingBox || { ymin: 150, xmin: 200, ymax: 850, xmax: 800 };
           setDetectedBox(bbox);
           setValuePopupPos({ top: `${(bbox.ymin / 1000) * 100 + 4}%`, left: '50%' });
 
           const detectedVar = (data.variantGuess as CardVariant) || 'Normal';
-          await setupIdentifiedCard(data.matchedCard, detectedVar);
+          const matchConfidence = typeof data.confidence === 'number' ? data.confidence : 0.95;
 
-          // Add to Scan Tray in multi-scan mode
-          if (isMultiScan) {
-            addCardToScanTray(data.matchedCard, detectedVar, data.livePricing);
+          // If match confidence is below threshold (< 0.80), prompt user for confirmation
+          if (matchConfidence < 0.8) {
+            setPendingLowConfidenceCard({
+              card: data.matchedCard,
+              variant: detectedVar,
+              confidence: matchConfidence,
+              livePricing: data.livePricing,
+              rawImagePreview: base64,
+            });
+          } else {
+            // High confidence match: proceed directly
+            await setupIdentifiedCard(data.matchedCard, detectedVar, matchConfidence);
+
+            // Add to Scan Tray in multi-scan mode
+            if (isMultiScan) {
+              addCardToScanTray(data.matchedCard, detectedVar, data.livePricing);
+            }
           }
         } else if (data.cardDetected && !data.matchedCard) {
-          setScannerNotice(`Detected "${data.cardName || 'Card'}", but catalog match wasn't found. You can search card below.`);
+          // If a card name was parsed, try searching catalog directly
+          if (data.cardName) {
+            handleSearchCards(data.cardName);
+            setActiveMode('search');
+            setScannerNotice(`AI recognized "${data.cardName}". Search results opened below.`);
+          } else {
+            setScannerNotice('Card detected. Please select match or use Direct Search / Quick Identify below.');
+          }
           if (data.alternativeGuesses) setAlternativeGuesses(data.alternativeGuesses);
-        } else if (data.temporaryHighDemand) {
-          setScannerNotice('AI Vision server is experiencing a momentary demand spike. Please retry or search your card directly below.');
+        } else if (data.errorMessage) {
+          setScannerNotice(data.errorMessage);
+          if (data.alternativeGuesses) setAlternativeGuesses(data.alternativeGuesses);
         } else {
-          setScannerNotice('Card not clearly detected in frame. Hold the card steady and centered, or use Direct Search / Photo Upload.');
+          setScannerNotice('Card not clearly detected in frame. Hold the card steady and centered, or use Quick Search.');
         }
       } else {
-        setScannerNotice('Scanner connection busy. Please retry or use Direct Search below.');
+        const errorJson = await res.json().catch(() => ({}));
+        setScannerNotice(errorJson.error || 'Scanner connection busy. Retrying or use Direct Search below.');
       }
     } catch (err) {
       console.warn('Recognition notice:', err);
@@ -490,10 +557,10 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
       const rawData = e.target?.result as string;
       setUploadPreview(rawData);
 
-      // Downscale image to max 800px on canvas to prevent huge payload timeouts
+      // Optimize image on canvas with high resolution (max 1600px, 0.92 quality) for sharp OCR & number recognition
       const img = new Image();
       img.onload = async () => {
-        const maxDim = 800;
+        const maxDim = 1600;
         let w = img.width;
         let h = img.height;
         if (w > maxDim || h > maxDim) {
@@ -511,7 +578,7 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, w, h);
-          const scaledBase64 = canvas.toDataURL('image/jpeg', 0.8);
+          const scaledBase64 = canvas.toDataURL('image/jpeg', 0.92);
           await processCardImageBase64(scaledBase64);
         } else {
           await processCardImageBase64(rawData);
@@ -942,6 +1009,28 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
               </div>
             )}
 
+            {/* Top Camera Controls Overlay */}
+            <div className="absolute top-4 left-4 right-4 z-20 flex items-center justify-between pointer-events-auto">
+              <button
+                onClick={() => setAutoScanEnabled(!autoScanEnabled)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all shadow backdrop-blur-md ${
+                  autoScanEnabled
+                    ? 'bg-emerald-500/90 text-white border border-emerald-400/50'
+                    : 'bg-black/60 text-slate-300 border border-white/20 hover:text-white'
+                }`}
+              >
+                <Zap className={`w-3.5 h-3.5 ${autoScanEnabled ? 'text-amber-300' : 'text-slate-400'}`} />
+                <span>Auto-Scan: {autoScanEnabled ? 'ON' : 'OFF'}</span>
+              </button>
+
+              {isScanning && (
+                <div className="flex items-center gap-1.5 bg-amber-500/90 text-slate-950 font-black text-xs px-3 py-1.5 rounded-full shadow animate-pulse">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>IDENTIFYING & PRICING...</span>
+                </div>
+              )}
+            </div>
+
             {/* Bottom Scan Trigger Overlay */}
             <div className="absolute bottom-4 right-4 z-20">
               <button
@@ -988,13 +1077,26 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
                 }
               }}
               onClick={() => fileInputRef.current?.click()}
-              className={`w-full max-w-md aspect-[16/10] border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
+              className={`w-full max-w-md aspect-[16/10] border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center text-center cursor-pointer transition-all relative overflow-hidden ${
                 isDragging
                   ? 'border-sky-400 bg-sky-500/10'
                   : 'border-slate-300 dark:border-slate-700 bg-white/50 dark:bg-slate-900/50 hover:border-amber-400'
               }`}
             >
-              {uploadPreview ? (
+              {isScanning ? (
+                <div className="flex flex-col items-center gap-3">
+                  <div className="relative">
+                    <RefreshCw className="w-10 h-10 text-amber-500 animate-spin" />
+                    <Sparkles className="w-5 h-5 text-sky-400 absolute -top-1 -right-1 animate-ping" />
+                  </div>
+                  <h4 className="text-sm font-black text-slate-800 dark:text-white">
+                    Analyzing Card Image with Gemini Vision...
+                  </h4>
+                  <p className="text-xs text-amber-500 font-bold">
+                    Retrieving Live Market Comps & Price Guide...
+                  </p>
+                </div>
+              ) : uploadPreview ? (
                 <div className="flex flex-col items-center gap-3">
                   <img src={uploadPreview} alt="Upload preview" className="w-24 h-32 object-cover rounded-lg shadow-md" />
                   <span className="text-xs text-slate-400">Click to upload another photo</span>
@@ -1008,7 +1110,7 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
                     Upload Pokémon Card Image
                   </h4>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xs">
-                    Drag and drop a photo or click to browse. Gemini Vision will identify and grade the card.
+                    Drag and drop a photo or click to browse. Instant card identification & price guide.
                   </p>
                 </>
               )}
@@ -1068,20 +1170,47 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
 
         {/* IDENTIFIED CARD & VIRTUAL GRADING / SLAB STUDIO */}
         {identifiedCard && (
-          <div className="p-4 sm:p-5 bg-gradient-to-b from-amber-500/5 via-slate-100/50 dark:via-slate-900/50 to-white dark:to-slate-900 border-t border-amber-500/20">
-            {/* Header Badge */}
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
+          <div
+            ref={identifiedSectionRef}
+            className="p-4 sm:p-5 bg-gradient-to-b from-amber-500/5 via-slate-100/50 dark:via-slate-900/50 to-white dark:to-slate-900 border-t border-amber-500/20"
+          >
+            {/* Header Badge & Match Confidence Indicator */}
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
                 <span className="text-xs font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
                   CARD IDENTIFIED & DIGITIZED
                 </span>
                 <span className="text-[11px] font-mono text-slate-400">ID: {identifiedCard.id}</span>
+
+                {/* Match Confidence Badge */}
+                {confidenceScore !== null && (
+                  <div
+                    className={`flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold border transition-all ${
+                      confidenceScore >= 0.9
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                        : confidenceScore >= 0.8
+                        ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30'
+                        : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/30'
+                    }`}
+                    title={`Vision model match confidence: ${Math.round(confidenceScore * 100)}%`}
+                  >
+                    <Zap className="w-3 h-3" />
+                    <span>{Math.round(confidenceScore * 100)}% Match</span>
+                  </div>
+                )}
               </div>
 
-              {/* Variant Selector */}
+              {/* Price Guide Action & Variant Selector */}
               <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-600 dark:text-slate-400">Variant:</span>
+                <button
+                  onClick={() => setShowPriceGuideModal(true)}
+                  className="px-3 py-1 bg-gradient-to-r from-amber-400 to-yellow-500 hover:brightness-105 text-slate-950 text-xs font-black rounded-lg shadow-sm flex items-center gap-1.5 transition-all"
+                >
+                  <BarChart3 className="w-3.5 h-3.5" />
+                  <span>Price Guide</span>
+                </button>
+
                 <div className="relative">
                   <select
                     value={selectedVariant}
@@ -1198,6 +1327,39 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
                           </div>
                         ))}
                       </div>
+                    ) : candidateMatches.length > 1 ? (
+                      <div className="space-y-1.5">
+                        <span className="text-[10px] font-bold text-amber-500 uppercase block mb-1">
+                          Detected Variant Candidates:
+                        </span>
+                        <div className="max-h-48 overflow-y-auto space-y-1.5 pr-0.5">
+                          {candidateMatches.map((c) => (
+                            <div
+                              key={c.id}
+                              onClick={() => handleSelectCorrectedCard(c)}
+                              className={`flex items-center gap-2 p-1.5 rounded-lg border cursor-pointer transition-all text-left ${
+                                c.id === identifiedCard.id
+                                  ? 'bg-amber-400/10 border-amber-400'
+                                  : 'bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800 hover:border-amber-400'
+                              }`}
+                            >
+                              <img
+                                src={c.images?.small}
+                                alt={c.name}
+                                className="w-7 h-10 object-cover rounded shrink-0"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-[11px] font-bold text-slate-900 dark:text-white truncate">
+                                  {c.name}
+                                </p>
+                                <p className="text-[9px] text-slate-400 truncate">
+                                  {c.set?.name} • #{c.number} {c.rarity ? `(${c.rarity})` : ''}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     ) : (
                       <p className="text-[10px] text-slate-400 text-center py-2">
                         {isCorrectionSearching ? 'Searching database...' : 'Type name above to find any card'}
@@ -1206,8 +1368,43 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
                   </div>
                 )}
 
+                {/* Match Probability & AI Confidence Meter */}
+                {confidenceScore !== null && (
+                  <div className="w-full mt-2.5 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-left">
+                    <div className="flex items-center justify-between text-xs font-bold mb-1.5">
+                      <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400 text-[11px]">
+                        <Zap className="w-3.5 h-3.5 text-amber-500" />
+                        <span>Match Probability</span>
+                      </span>
+                      <span
+                        className={`font-mono text-xs font-black ${
+                          confidenceScore >= 0.9
+                            ? 'text-emerald-500'
+                            : confidenceScore >= 0.8
+                            ? 'text-amber-500'
+                            : 'text-rose-500'
+                        }`}
+                      >
+                        {Math.round(confidenceScore * 100)}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          confidenceScore >= 0.9
+                            ? 'bg-emerald-500'
+                            : confidenceScore >= 0.8
+                            ? 'bg-amber-400'
+                            : 'bg-rose-500'
+                        }`}
+                        style={{ width: `${Math.min(100, Math.max(5, confidenceScore * 100))}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {/* Market Valuation Pill */}
-                <div className="w-full mt-3 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between text-left">
+                <div className="w-full mt-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between text-left">
                   <div>
                     <span className="text-[10px] uppercase font-bold text-slate-400 block">RAW VALUE</span>
                     <span className="text-sm font-extrabold font-mono text-slate-800 dark:text-slate-200">
@@ -1221,6 +1418,15 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
                     </span>
                   </div>
                 </div>
+
+                {/* Direct Price Guide Action Button */}
+                <button
+                  onClick={() => setShowPriceGuideModal(true)}
+                  className="w-full mt-2 py-2 px-3 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-500 hover:brightness-105 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 shadow-md transition-all active:scale-[0.98]"
+                >
+                  <BarChart3 className="w-4 h-4" />
+                  <span>Open Real-Time Price Guide</span>
+                </button>
               </div>
 
               {/* Col 2: Virtual Grading & Slab Config (8 cols) */}
@@ -1494,9 +1700,135 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* EMBEDDED REAL-TIME PRICE GUIDE & VALUATION MODULE */}
+            <div className="mt-4 p-4 rounded-2xl bg-white dark:bg-slate-950 border border-amber-500/30 shadow-md">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3 pb-2 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 rounded-lg bg-amber-400 text-slate-950">
+                    <BarChart3 className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-1.5">
+                      <span>REAL-TIME PRICE GUIDE</span>
+                      <span className="text-[10px] font-mono font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                        LIVE MARKET
+                      </span>
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      Cross-referenced TCGplayer Market, PSA Census, & eBay Sold Comps
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setShowPriceGuideModal(true)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-amber-400 hover:text-slate-950 text-slate-700 dark:text-slate-200 text-xs font-bold transition-all flex items-center gap-1"
+                >
+                  <span>Expand Price Guide</span>
+                  <ExternalLink className="w-3 h-3" />
+                </button>
+              </div>
+
+              {/* Grade Ladder Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+                {/* Raw */}
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <span className="text-[10px] font-bold text-slate-400 block uppercase">Raw / NM</span>
+                  <span className="text-sm font-black font-mono text-slate-900 dark:text-white block mt-0.5">
+                    ${rawPrice.toFixed(2)}
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono">TCG Median</span>
+                </div>
+
+                {/* PSA 10 */}
+                <div className="p-2.5 rounded-xl bg-gradient-to-br from-amber-500/15 to-yellow-500/20 border border-amber-500/40">
+                  <span className="text-[10px] font-black text-amber-500 dark:text-amber-400 block uppercase flex items-center gap-0.5">
+                    <Sparkles className="w-2.5 h-2.5" /> PSA 10
+                  </span>
+                  <span className="text-sm font-black font-mono text-amber-500 block mt-0.5">
+                    ${(pricingData?.psa10Price || rawPrice * 3.4).toFixed(2)}
+                  </span>
+                  <span className="text-[9px] font-bold text-emerald-500 font-mono">
+                    +{pricingData?.psa10DeltaPercent || Math.round((((pricingData?.psa10Price || rawPrice * 3.4) - rawPrice) / rawPrice) * 100)}%
+                  </span>
+                </div>
+
+                {/* PSA 9 */}
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <span className="text-[10px] font-bold text-sky-500 block uppercase">PSA 9</span>
+                  <span className="text-sm font-black font-mono text-sky-500 block mt-0.5">
+                    ${(pricingData?.psa9Price || rawPrice * 1.8).toFixed(2)}
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono">Mint</span>
+                </div>
+
+                {/* PSA 8 */}
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <span className="text-[10px] font-bold text-slate-500 block uppercase">PSA 8</span>
+                  <span className="text-sm font-black font-mono text-slate-800 dark:text-slate-200 block mt-0.5">
+                    ${(pricingData?.psa8Price || rawPrice * 1.25).toFixed(2)}
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono">NM-MT</span>
+                </div>
+
+                {/* CGC 10 */}
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <span className="text-[10px] font-bold text-sky-400 block uppercase">CGC 10</span>
+                  <span className="text-sm font-black font-mono text-sky-400 block mt-0.5">
+                    ${(pricingData?.cgc10Price || (pricingData?.psa10Price || rawPrice * 3.4) * 1.05).toFixed(2)}
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono">Pristine</span>
+                </div>
+
+                {/* BGS 9.5 */}
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                  <span className="text-[10px] font-bold text-purple-400 block uppercase">BGS 9.5</span>
+                  <span className="text-sm font-black font-mono text-purple-400 block mt-0.5">
+                    ${(pricingData?.bgs95Price || (pricingData?.psa10Price || rawPrice * 3.4) * 0.92).toFixed(2)}
+                  </span>
+                  <span className="text-[9px] text-slate-400 font-mono">Gem Mint</span>
+                </div>
+              </div>
+
+              {/* Recent sales snippet */}
+              {pricingData?.recentComps && pricingData.recentComps.length > 0 && (
+                <div className="mt-3 pt-2.5 border-t border-slate-200 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase text-slate-400">
+                      LATEST SOLD COMP:
+                    </span>
+                    <span className="text-[11px] font-mono font-bold text-slate-700 dark:text-slate-300">
+                      {pricingData.recentComps[0].grade} • ${pricingData.recentComps[0].price.toFixed(2)} ({pricingData.recentComps[0].date})
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setShowPriceGuideModal(true)}
+                    className="text-[11px] font-bold text-amber-500 hover:text-amber-400 underline"
+                  >
+                    View all {pricingData.recentComps.length} recent comps
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
+
+      {/* FULL PRICE GUIDE MODAL */}
+      {identifiedCard && (
+        <PriceGuideModal
+          isOpen={showPriceGuideModal}
+          onClose={() => setShowPriceGuideModal(false)}
+          cardName={identifiedCard.name}
+          setName={identifiedCard.set?.name || 'Pokemon Set'}
+          cardNumber={identifiedCard.number || '001'}
+          cardRarity={identifiedCard.rarity}
+          cardImageUrl={identifiedCard.images?.large || identifiedCard.images?.small}
+          variant={selectedVariant}
+          pricing={pricingData}
+        />
+      )}
 
       {/* SCAN TRAY AT BOTTOM: Multi-card batching & Running Total Value */}
       <div className="p-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 shrink-0">
@@ -1596,6 +1928,113 @@ export const LiveScanner: React.FC<LiveScannerProps> = ({
           </button>
         )}
       </div>
+
+      {/* Low Confidence Match Confirmation Dialog */}
+      {pendingLowConfidenceCard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 border border-amber-500/30 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden p-5 sm:p-6 text-slate-900 dark:text-white">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-amber-500/10 text-amber-500 flex items-center justify-center">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black tracking-tight">Confirm Card Match</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Match probability is below 80%</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setPendingLowConfidenceCard(null)}
+                className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-white transition-all"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Match Comparison & Confidence Details */}
+            <div className="mt-4 flex gap-4 items-center bg-slate-50 dark:bg-slate-950 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800">
+              <img
+                src={pendingLowConfidenceCard.card.images?.small || pendingLowConfidenceCard.card.images?.large}
+                alt={pendingLowConfidenceCard.card.name}
+                className="w-16 h-22 object-cover rounded-lg shadow-md shrink-0"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                    {Math.round(pendingLowConfidenceCard.confidence * 100)}% Match
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    #{pendingLowConfidenceCard.card.number}
+                  </span>
+                </div>
+                <h4 className="text-sm font-black truncate">{pendingLowConfidenceCard.card.name}</h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                  {pendingLowConfidenceCard.card.set?.name || 'Pokemon TCG'} • {pendingLowConfidenceCard.variant}
+                </p>
+                <div className="mt-1 text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                  Est. Raw: ${pendingLowConfidenceCard.livePricing?.rawPrice?.toFixed(2) || (pendingLowConfidenceCard.card.tcgplayer?.prices?.holofoil?.market || 15.0).toFixed(2)}
+                </div>
+              </div>
+            </div>
+
+            {/* Alternative Guesses if available */}
+            {alternativeGuesses.length > 0 && (
+              <div className="mt-3">
+                <span className="text-[11px] font-bold text-slate-400 block mb-1.5">
+                  Did you mean one of these?
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {alternativeGuesses.map((alt) => (
+                    <button
+                      key={alt}
+                      onClick={() => {
+                        setPendingLowConfidenceCard(null);
+                        setShowCorrectionDialog(true);
+                        handleCorrectionSearch(alt);
+                      }}
+                      className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-amber-400 hover:text-slate-950 text-slate-700 dark:text-slate-300 transition-all border border-slate-200 dark:border-slate-700"
+                    >
+                      {alt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="mt-5 grid grid-cols-2 gap-2.5">
+              <button
+                onClick={() => {
+                  const cardToSearch = pendingLowConfidenceCard.card.name;
+                  setPendingLowConfidenceCard(null);
+                  setShowCorrectionDialog(true);
+                  handleCorrectionSearch(cardToSearch);
+                }}
+                className="py-2.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold hover:bg-slate-100 dark:hover:bg-slate-700 transition-all flex items-center justify-center gap-1.5"
+              >
+                <Search className="w-3.5 h-3.5 text-slate-400" />
+                <span>Search Correct Card</span>
+              </button>
+
+              <button
+                onClick={async () => {
+                  const pending = pendingLowConfidenceCard;
+                  setPendingLowConfidenceCard(null);
+                  await setupIdentifiedCard(pending.card, pending.variant, pending.confidence);
+                  if (isMultiScan) {
+                    addCardToScanTray(pending.card, pending.variant, pending.livePricing);
+                  }
+                }}
+                className="py-2.5 px-3 rounded-xl bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 text-slate-950 text-xs font-black hover:brightness-105 transition-all flex items-center justify-center gap-1.5 shadow-md"
+              >
+                <Check className="w-3.5 h-3.5" />
+                <span>Confirm & Digitize</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -5,8 +5,12 @@ import {
   getCardById,
   computeCardPricing,
 } from './cardService.ts';
+import { mcpRouter } from './mcpRouter.ts';
 
 export const apiRouter = Router();
+
+// Mount Model Context Protocol (MCP) Server
+apiRouter.use('/mcp', mcpRouter);
 
 // Health check
 apiRouter.get('/health', (_req: Request, res: Response) => {

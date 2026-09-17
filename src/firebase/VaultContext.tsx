@@ -11,7 +11,7 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './config.ts';
 import { useAuth } from './AuthContext.tsx';
-import { CardItem, ScanTrayItem, PortfolioSnapshot, SlabConfig, SlabType, LabelColor } from '../types/pokemon.ts';
+import { CardItem, ScanTrayItem, PortfolioSnapshot, SlabConfig, SlabType, LabelColor, UserProfileData, ProfileSection } from '../types/pokemon.ts';
 
 export function generateNextVcaSerial(existingCards: CardItem[], offset = 0): string {
   let highestNum = 100; // VCA-26-0100 is already in use, so must start from 101!
@@ -46,10 +46,46 @@ export function getDefaultSlabConfig(serial: string): SlabConfig {
   };
 }
 
+export const DEFAULT_PROFILE_SECTIONS: ProfileSection[] = [
+  {
+    id: 'sec_bio',
+    title: 'Collector Bio & Lore',
+    content: 'Specializing in vintage Wizards of the Coast holographics, Japanese promo exclusives, and modern SV alternate arts.',
+    type: 'bio',
+    tags: ['Vintage WOTC', 'JP Promos', 'SV Alts'],
+  },
+  {
+    id: 'sec_grail',
+    title: 'Grail Targets & Chases',
+    content: 'Currently hunting: 1st Edition Base Set Charizard PSA 9+, Mario Pikachu Special Box Promo, and Moonbreon VMAX Alt Art.',
+    type: 'grail',
+    tags: ['Charizard Base', 'Mario Pikachu', 'Moonbreon'],
+  },
+  {
+    id: 'sec_trade',
+    title: 'Trading & Authentication Policy',
+    content: 'All raw cards are laser-scanned with VCA AI before grading submission. Open to 1:1 vintage trades or verified slab swaps.',
+    type: 'trade_policy',
+    tags: ['VCA Verified', 'Insured Shipping', 'Trusted Collector'],
+  },
+  {
+    id: 'sec_mcp',
+    title: 'MCP Server & External Tools Connection',
+    content: 'Connected to local PokéVault MCP Server on port 3000. Claude Desktop & Cursor IDE can query live vault, comps, and price guides directly.',
+    type: 'mcp_integration',
+    tags: ['MCP Protocol 2024-11-05', 'JSON-RPC 2.0', 'SSE / Stdout'],
+  },
+];
+
 interface VaultContextType {
   cards: CardItem[];
   loading: boolean;
   portfolioSnapshots: PortfolioSnapshot[];
+  profile: UserProfileData | null;
+  updateProfile: (updates: Partial<UserProfileData>) => Promise<void>;
+  addProfileSection: (section: Omit<ProfileSection, 'id'>) => Promise<void>;
+  updateProfileSection: (sectionId: string, updates: Partial<ProfileSection>) => Promise<void>;
+  removeProfileSection: (sectionId: string) => Promise<void>;
   addBatchToVault: (items: ScanTrayItem[]) => Promise<void>;
   addSingleCardToVault: (cardData: Partial<CardItem>) => Promise<CardItem>;
   toggleFavorite: (cardId: string) => Promise<void>;
@@ -69,8 +105,57 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [cards, setCards] = useState<CardItem[]>([]);
   const [portfolioSnapshots, setPortfolioSnapshots] = useState<PortfolioSnapshot[]>([]);
+  const [profile, setProfile] = useState<UserProfileData | null>(null);
   const [loading, setLoading] = useState(true);
   const [isRefreshingPrices, setIsRefreshingPrices] = useState(false);
+
+  // Sync Profile document
+  useEffect(() => {
+    if (!user) {
+      setProfile(null);
+      return;
+    }
+
+    const profilePath = `users/${user.uid}/profile/info`;
+    const profileRef = doc(db, 'users', user.uid, 'profile', 'info');
+
+    const unsubscribeProfile = onSnapshot(
+      profileRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data() as UserProfileData;
+          setProfile(data);
+        } else {
+          // Initialize default profile
+          const defaultProfile: UserProfileData = {
+            userId: user.uid,
+            email: user.email || 'collector@pokevault.app',
+            displayName: user.displayName || (user.isAnonymous ? 'Master Trainer' : user.email?.split('@')[0] || 'Trainer'),
+            avatarUrl: 'https://images.unsplash.com/photo-1613771404784-3a5686aa2be3?w=300&auto=format&fit=crop&q=80',
+            headerImageUrl: 'https://images.unsplash.com/photo-1579783902614-a3fb3927b675?w=1200&auto=format&fit=crop&q=80',
+            bio: 'Elite Pokémon Card Collector & Holographic Slab Enthusiast. Building a PSA 10 Master Set.',
+            favoritePokemon: 'Gardevoir ex & Gengar',
+            collectorRank: 'Grandmaster Elite',
+            currency: 'USD',
+            sections: DEFAULT_PROFILE_SECTIONS,
+            mcpApiKey: `mcp_pv_${user.uid.slice(0, 8)}_${Math.random().toString(36).substring(2, 6)}`,
+            mcpCustomEndpoint: 'http://localhost:3000/api/mcp',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          setProfile(defaultProfile);
+          setDoc(profileRef, defaultProfile).catch((err) => {
+            console.warn('Initial profile doc creation skipped:', err);
+          });
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, profilePath);
+      }
+    );
+
+    return () => unsubscribeProfile();
+  }, [user]);
 
   // Sync Cards collection
   useEffect(() => {
@@ -375,6 +460,51 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const updateProfile = async (updates: Partial<UserProfileData>) => {
+    if (!user) throw new Error('Must be signed in to update profile');
+    const profilePath = `users/${user.uid}/profile/info`;
+    const profileRef = doc(db, 'users', user.uid, 'profile', 'info');
+
+    const updated = {
+      ...(profile || {}),
+      ...updates,
+      userId: user.uid,
+      email: user.email || profile?.email || 'collector@pokevault.app',
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      await setDoc(profileRef, updated, { merge: true });
+      setProfile(updated as UserProfileData);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, profilePath);
+    }
+  };
+
+  const addProfileSection = async (section: Omit<ProfileSection, 'id'>) => {
+    if (!user || !profile) return;
+    const newSection: ProfileSection = {
+      ...section,
+      id: `sec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    };
+    const updatedSections = [...(profile.sections || []), newSection];
+    await updateProfile({ sections: updatedSections });
+  };
+
+  const updateProfileSection = async (sectionId: string, updates: Partial<ProfileSection>) => {
+    if (!user || !profile) return;
+    const updatedSections = (profile.sections || []).map((sec) =>
+      sec.id === sectionId ? { ...sec, ...updates } : sec
+    );
+    await updateProfile({ sections: updatedSections });
+  };
+
+  const removeProfileSection = async (sectionId: string) => {
+    if (!user || !profile) return;
+    const updatedSections = (profile.sections || []).filter((sec) => sec.id !== sectionId);
+    await updateProfile({ sections: updatedSections });
+  };
+
   // Auto-refresh schedule once per day or on demand
   useEffect(() => {
     if (!user || cards.length === 0) return;
@@ -390,6 +520,11 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
         cards,
         loading,
         portfolioSnapshots,
+        profile,
+        updateProfile,
+        addProfileSection,
+        updateProfileSection,
+        removeProfileSection,
         addBatchToVault,
         addSingleCardToVault,
         toggleFavorite,

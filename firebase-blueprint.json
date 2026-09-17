@@ -46,14 +46,35 @@
     },
     "UserProfile": {
       "title": "UserProfile",
-      "description": "User profile settings and stats",
+      "description": "User profile settings, customizable sections, avatar/header URLs (GIF compatible), and collector stats",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
         "email": { "type": "string", "maxLength": 100 },
         "displayName": { "type": "string", "maxLength": 100 },
+        "avatarUrl": { "type": "string", "maxLength": 2048 },
+        "headerImageUrl": { "type": "string", "maxLength": 2048 },
+        "bio": { "type": "string", "maxLength": 1000 },
+        "favoritePokemon": { "type": "string", "maxLength": 50 },
+        "collectorRank": { "type": "string", "maxLength": 50 },
         "currency": { "type": "string", "maxLength": 10 },
-        "createdAt": { "type": "string" }
+        "featuredCardId": { "type": "string", "maxLength": 100 },
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "content": { "type": "string" },
+              "type": { "type": "string" }
+            }
+          }
+        },
+        "mcpApiKey": { "type": "string", "maxLength": 100 },
+        "mcpCustomEndpoint": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
       },
       "required": ["userId", "email"]
     }

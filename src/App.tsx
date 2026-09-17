@@ -4,6 +4,7 @@ import { VaultProvider, useVault } from './firebase/VaultContext.tsx';
 import { LiveScanner } from './components/LiveScanner.tsx';
 import { VaultView } from './components/VaultView.tsx';
 import { PortfolioView } from './components/PortfolioView.tsx';
+import { ProfileDashboard } from './components/ProfileDashboard.tsx';
 import { CardDetailModal } from './components/CardDetailModal.tsx';
 import { ThreeSlabViewer } from './components/ThreeSlabViewer.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
@@ -19,14 +20,15 @@ import {
   ShieldCheck,
   Moon,
   Sun,
+  LayoutDashboard,
 } from 'lucide-react';
 
 function PokeVaultApp() {
   const { user, logout } = useAuth();
-  const { totalRawValue, totalPsa10Value, cards } = useVault();
+  const { totalRawValue, totalPsa10Value, cards, profile } = useVault();
 
-  // Navigation tab: 'vault' | 'scanner' | 'portfolio'
-  const [activeTab, setActiveTab] = useState<'vault' | 'scanner' | 'portfolio'>('vault');
+  // Navigation tab: 'vault' | 'scanner' | 'portfolio' | 'profile'
+  const [activeTab, setActiveTab] = useState<'vault' | 'scanner' | 'portfolio' | 'profile'>('vault');
 
   // Modals & 3D Viewer states
   const [selectedCardForDetail, setSelectedCardForDetail] = useState<CardItem | null>(null);
@@ -103,6 +105,18 @@ function PokeVaultApp() {
               <LineChart className="w-3.5 h-3.5 text-purple-500" />
               <span>Portfolio</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab('profile')}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                activeTab === 'profile'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <User className="w-3.5 h-3.5 text-pink-500" />
+              <span>Profile & MCP</span>
+            </button>
           </nav>
 
           {/* Right Action Area */}
@@ -135,12 +149,23 @@ function PokeVaultApp() {
             {/* User Account / Auth */}
             {user ? (
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs">
-                  <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                <button
+                  onClick={() => setActiveTab('profile')}
+                  className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs transition-colors"
+                  title="View Profile Dashboard"
+                >
+                  <div className="w-5 h-5 rounded-full overflow-hidden bg-slate-900 flex-shrink-0">
+                    <img
+                      src={profile?.avatarUrl || 'https://images.unsplash.com/photo-1613771404784-3a5686aa2be3?w=100&auto=format&fit=crop&q=80'}
+                      alt="Avatar"
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
                   <span className="font-semibold text-slate-700 dark:text-slate-300 max-w-[110px] truncate">
-                    {user.isAnonymous ? 'Guest Collector' : user.email?.split('@')[0]}
+                    {profile?.displayName || (user.isAnonymous ? 'Guest Collector' : user.email?.split('@')[0])}
                   </span>
-                </div>
+                </button>
 
                 <button
                   onClick={() => logout()}
@@ -190,6 +215,15 @@ function PokeVaultApp() {
             onNavigateToScanner={() => setActiveTab('scanner')}
           />
         )}
+
+        {activeTab === 'profile' && (
+          <ProfileDashboard
+            onOpenCardDetail={(card) => setSelectedCardForDetail(card)}
+            onOpen3DSlab={(card) => setSelectedCardFor3D(card)}
+            onNavigateToScanner={() => setActiveTab('scanner')}
+            onNavigateToVault={() => setActiveTab('vault')}
+          />
+        )}
       </main>
 
       {/* Signature Pokéball Floating Navigation Button */}
@@ -215,19 +249,16 @@ function PokeVaultApp() {
         </button>
 
         {/* Mobile Navigation bar around the Pokéball */}
-        <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 -z-10 flex items-center justify-around px-6">
+        <div className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 -z-10 flex items-center justify-around px-4">
           <button
             onClick={() => setActiveTab('vault')}
             className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
               activeTab === 'vault' ? 'text-amber-500' : 'text-slate-400'
             }`}
           >
-            <FolderLock className="w-5 h-5" />
+            <FolderLock className="w-4 h-4" />
             <span>Vault</span>
           </button>
-
-          {/* Spacer for Pokéball button */}
-          <div className="w-12" />
 
           <button
             onClick={() => setActiveTab('portfolio')}
@@ -235,8 +266,21 @@ function PokeVaultApp() {
               activeTab === 'portfolio' ? 'text-amber-500' : 'text-slate-400'
             }`}
           >
-            <LineChart className="w-5 h-5" />
+            <LineChart className="w-4 h-4" />
             <span>Portfolio</span>
+          </button>
+
+          {/* Spacer for Pokéball button */}
+          <div className="w-12" />
+
+          <button
+            onClick={() => setActiveTab('profile')}
+            className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
+              activeTab === 'profile' ? 'text-pink-500' : 'text-slate-400'
+            }`}
+          >
+            <User className="w-4 h-4" />
+            <span>Profile</span>
           </button>
         </div>
       </div>
